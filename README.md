@@ -1,8 +1,11 @@
-# PySpark Import (Simple)
+# PySpark Import
 
-- Read messages from Kafka
-- Process one micro-batch every 30 seconds
-- Write to Sink (Elasticsearch, FTP) via `foreachBatch`
+PySpark Structured Streaming pipeline for Suricata BGP eve.json events:
+
+1. Read messages from Kafka
+2. Parse only BGP UPDATE messages
+3. Extract AS_PATH, NEXT_HOP, and NLRI
+4. Write micro-batches to Elasticsearch and/or FTP via foreachBatch
 
 ## Project Structure
 
@@ -10,26 +13,27 @@
 .
 ├── application.conf
 ├── README.md
-├── requestments
+├── requirements.txt
 └── pyspark-import
     ├── main.py
+    ├── parse_bgp.py
     └── writer.py
 ```
 
-## Installation & Usage
+## Installation and Usage
 
 ```bash
 # Install dependencies
-pip install -r requestments
+pip install -r requirements.txt
 
-# Export config file path (or use default application.conf)
+# Optional: override config path (defaults to application.conf)
 export APP_CONFIG_FILE=/path/to/application.conf
 
-# Run the application
+# Run streaming job
 python pyspark-import/main.py
 ```
 
-## Configuration (`application.conf`)
+## Configuration (application.conf)
 
 ```hocon
 kafka {
@@ -60,10 +64,42 @@ ftp {
 }
 ```
 
+## Data Flow
+
+1. Kafka value is cast to string JSON in pyspark-import/main.py
+2. parse_bgp_updates in pyspark-import/parse_bgp.py parses and filters records
+3. Only event_type=bgp and bgp.message_type=update are kept
+4. Result is sent to selected sink writer in pyspark-import/writer.py
+
+## BGP Parsing Strategy
+
+Path attribute handling in pyspark-import/parse_bgp.py:
+
+1. type=2 (AS_PATH): auto-detect ASN width (2-byte or 4-byte) and parse accordingly
+2. type=17 (AS4_PATH): parse as fixed 4-byte ASN
+3. Final as_path selection: if type=17 exists, it overrides type=2 result
+4. type=3 (NEXT_HOP): parse IPv4 next_hop
+5. NLRI: parse IPv4 prefixes from UPDATE tail
+
 ## Sink Selection
 
-You can switch between different sink modes in `main.py`:
+Change sink_fn in pyspark-import/main.py:
 
-- **Elasticsearch only**: `sink_fn = partial(write_batch_to_es, **ES_KWARGS)`
-- **FTP only**: `sink_fn = partial(write_batch_to_ftp, **FTP_KWARGS)`
-- **Both (ES + FTP)**: `sink_fn = partial(write_batch_to_all, es_kwargs=ES_KWARGS, ftp_kwargs=FTP_KWARGS)`
+1. Elasticsearch only: partial(write_batch_to_es, **ES_KWARGS)
+2. FTP only: partial(write_batch_to_ftp, **FTP_KWARGS)
+3. Both: partial(write_batch_to_all, es_kwargs=ES_KWARGS, ftp_kwargs=FTP_KWARGS)
+
+## Example
+
+Input (Suricata eve.json BGP update):
+
+```json
+{"timestamp":"2022-08-24T17:13:25.029636+0000","flow_id":939008963394962,"pcap_cnt":26,"event_type":"bgp","src_ip":"192.168.51.1","src_port":179,"dest_ip":"192.168.51.2","dest_port":54402,"proto":"TCP","ip_v":4,"pkt_src":"wire/pcap","bgp":{"message_type":"update","payload_length":42,"payload":"00000023400101005002000602010000fde8400304c0a8330180040400000000c00804007b01c8100a0a"}}
+```
+
+Output shape:
+
+```json
+{"timestamp":"2022-08-24T17:13:25.029636+0000","flow_id":939008963394962,"pcap_cnt":26,"event_type":"bgp","src_ip":"192.168.51.1","src_port":179,"dest_ip":"192.168.51.2","dest_port":54402,"proto":"TCP","ip_v":4,"pkt_src":"wire/pcap","bgp":{"message_type":"update","as_path":[65000],"next_hop":"192.168.51.1","nlri":["10.10.0.0/16"]}}
+```
+

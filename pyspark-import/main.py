@@ -15,6 +15,7 @@ from functools import partial
 from pyspark.sql import SparkSession
 from pyhocon import ConfigFactory
 
+from parse_bgp import parse_bgp_updates
 from writer import write_batch_to_es, write_batch_to_ftp, write_batch_to_all
 
 
@@ -110,7 +111,10 @@ def main():
     # ── 2. Cast Kafka value to JSON string ──
     df_json = kafka_df.selectExpr("CAST(value AS STRING) AS value")
 
-    # ── 3. Select sink mode ────────────────
+    # ── 3. Parse BGP UPDATE payload fields ─
+    df_parsed = parse_bgp_updates(df_json, value_col="value")
+
+    # ── 4. Select sink mode ────────────────
     #
     #  ┌─ Elasticsearch only ───────────────────────────────────────┐
     #  │ sink_fn = partial(write_batch_to_es,  **ES_KWARGS)         │
@@ -123,9 +127,9 @@ def main():
     #
     sink_fn = partial(write_batch_to_ftp, **FTP_KWARGS)   # Change as needed
 
-    # ── 4. Start streaming ─────────────────
+    # ── 5. Start streaming ─────────────────
     query = (
-        df_json.writeStream
+        df_parsed.writeStream
         .foreachBatch(sink_fn)
         .option("checkpointLocation", checkpoint_location)
         .outputMode("append")
