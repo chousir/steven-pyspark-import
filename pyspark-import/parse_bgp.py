@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import csv
 import ipaddress
 import json
+from functools import lru_cache
 from typing import Any
 
 from pyspark.sql import DataFrame
@@ -45,6 +47,14 @@ BGP_PARSE_SCHEMA = T.StructType(
 		T.StructField("as_path", T.ArrayType(T.IntegerType()), True),
 		T.StructField("next_hop", T.StringType(), True),
 		T.StructField("nlri", T.ArrayType(T.StringType()), True),
+	]
+)
+
+
+ASN_ORG_SCHEMA = T.StructType(
+	[
+		T.StructField("asn", T.IntegerType(), True),
+		T.StructField("description", T.StringType(), True),
 	]
 )
 
@@ -141,6 +151,39 @@ def _parse_as_path_attr(value: bytes, asn_size: int) -> list[int]:
 	return as_path
 
 
+def _is_private_asn(asn: int) -> bool:
+	# RFC 6996 private-use ASN ranges.
+	return (64512 <= asn <= 65534) or (4200000000 <= asn <= 4294967294)
+
+
+def _organization_for_asn(asn: int, asn_map: dict[int, str]) -> str:
+	if asn in asn_map:
+		return asn_map[asn]
+	if _is_private_asn(asn):
+		return "Private AS"
+	return f"AS{asn}"
+
+
+@lru_cache(maxsize=4)
+def _load_asn_org_map(asn_csv_path: str) -> dict[int, str]:
+	asn_map: dict[int, str] = {}
+	try:
+		with open(asn_csv_path, newline="", encoding="utf-8") as csv_file:
+			reader = csv.DictReader(csv_file)
+			for row in reader:
+				asn_raw = row.get("asn")
+				description = row.get("description")
+				if asn_raw is None or description is None:
+					continue
+				try:
+					asn_map[int(asn_raw)] = description
+				except ValueError:
+					continue
+	except OSError:
+		return {}
+	return asn_map
+
+
 def parse_bgp_update_payload(payload_hex: str | None) -> dict[str, Any]:
 	"""
 	Parse BGP UPDATE payload hex string.
@@ -220,16 +263,17 @@ def parse_bgp_update_payload(payload_hex: str | None) -> dict[str, Any]:
 _parse_bgp_update_udf = F.udf(parse_bgp_update_payload, BGP_PARSE_SCHEMA)
 
 
-def parse_bgp_updates(df: DataFrame, value_col: str = "value") -> DataFrame:
+def parse_bgp_updates(df: DataFrame, value_col: str = "value", asn_csv_path: str = "as.csv") -> DataFrame:
 	"""
 	Parse Suricata eve.json records and keep only BGP UPDATE events.
 
 	Input:
 	- `df` must contain a JSON string column (default `value`).
+	- `asn_csv_path`: path to as-metadata CSV for ASN → Organization lookup.
 
 	Output:
 	- One row per BGP UPDATE event.
-	- `bgp` struct contains `message_type`, `as_path`, `next_hop`, `nlri`.
+	- `bgp` struct contains `message_type`, `as_path`, `next_hop`, `nlri`, `organization`.
 	"""
 	parsed = (
 		df.withColumn("json", F.from_json(F.col(value_col), EVE_BGP_SCHEMA))
@@ -239,22 +283,45 @@ def parse_bgp_updates(df: DataFrame, value_col: str = "value") -> DataFrame:
 
 	parsed_fields = _parse_bgp_update_udf(F.col("bgp.payload"))
 
+	# Load ASN → Organization mapping
+	spark = df.sparkSession
+	asn_df = spark.read.csv(
+		asn_csv_path,
+		header=True,
+		schema=ASN_ORG_SCHEMA,
+	)
+	asn_dict = {row.asn: row.description for row in asn_df.select("asn", "description").collect()}
+	asn_dict_broadcast = spark.broadcast(asn_dict)
+
+	def _map_asn_to_org(asn_list: list[int]) -> list[str]:
+		if not asn_list:
+			return []
+		asn_map = asn_dict_broadcast.value
+		return [_organization_for_asn(asn, asn_map) for asn in asn_list]
+
+	_map_asn_udf = F.udf(_map_asn_to_org, T.ArrayType(T.StringType()))
+
 	return (
 		parsed.withColumn("parsed_bgp", parsed_fields)
+		.withColumn(
+			"organization",
+			_map_asn_udf(F.col("parsed_bgp.as_path")),
+		)
 		.withColumn(
 			"bgp",
 			F.struct(
 				F.col("bgp.message_type").alias("message_type"),
 				F.col("parsed_bgp.as_path").alias("as_path"),
+				F.col("organization").alias("organization"),
 				F.col("parsed_bgp.next_hop").alias("next_hop"),
 				F.col("parsed_bgp.nlri").alias("nlri"),
 			),
 		)
-		.drop("parsed_bgp")
+		.drop("parsed_bgp", "organization")
 	)
 
 
-def parse_single_event(raw_json: str) -> dict[str, Any] | None:
+def parse_single_event(raw_json: str, asn_csv_path: str = "as.csv") -> dict[str, Any] | None:
 	"""Parse one eve.json string into output shape used by parse_bgp_updates."""
 	try:
 		event = json.loads(raw_json)
@@ -269,9 +336,12 @@ def parse_single_event(raw_json: str) -> dict[str, Any] | None:
 		return None
 
 	parsed = parse_bgp_update_payload(bgp.get("payload"))
+	asn_map = _load_asn_org_map(asn_csv_path)
+	organizations = [_organization_for_asn(asn, asn_map) for asn in parsed["as_path"]]
 	event["bgp"] = {
 		"message_type": "update",
 		"as_path": parsed["as_path"],
+		"organization": organizations,
 		"next_hop": parsed["next_hop"],
 		"nlri": parsed["nlri"],
 	}

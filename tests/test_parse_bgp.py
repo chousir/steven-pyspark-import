@@ -75,6 +75,36 @@ class TestParseBgp(unittest.TestCase):
 
         self.assertIsNone(parse_bgp.parse_single_event(raw))
 
+    def test_parse_single_event_includes_organization_field(self) -> None:
+        raw = json.dumps(
+            {
+                "event_type": "bgp",
+                "bgp": {
+                    "message_type": "update",
+                    "payload": "00000024400101005002000a02020000feb00000fde8400304c0a83202c00808007b01c80141028e100a14",
+                },
+            }
+        )
+
+        result = parse_bgp.parse_single_event(raw)
+
+        self.assertIsNotNone(result)
+        self.assertIn("bgp", result)
+        self.assertIn("organization", result["bgp"])
+        self.assertEqual(result["bgp"]["organization"], ['Private AS', 'Private AS'])
+
+    def test_private_asn_is_labeled_private_as(self) -> None:
+        asn_map = {
+            1: "Level 3 Parent LLC",
+            131083: "Mercari Inc.",
+        }
+
+        self.assertEqual(parse_bgp._organization_for_asn(65000, asn_map), "Private AS")
+        self.assertEqual(parse_bgp._organization_for_asn(4200000001, asn_map), "Private AS")
+        self.assertEqual(parse_bgp._organization_for_asn(1, asn_map), "Level 3 Parent LLC")
+        self.assertEqual(parse_bgp._organization_for_asn(999999, asn_map), "AS999999")
+        self.assertEqual(parse_bgp._organization_for_asn(131083, asn_map), "Mercari Inc.")
+
 
 if __name__ == "__main__":
     unittest.main()

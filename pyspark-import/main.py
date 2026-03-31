@@ -112,7 +112,7 @@ def main():
     df_json = kafka_df.selectExpr("CAST(value AS STRING) AS value")
 
     # ── 3. Parse BGP UPDATE payload fields ─
-    df_parsed = parse_bgp_updates(df_json, value_col="value")
+    df_parsed = parse_bgp_updates(df_json, value_col="value", asn_csv_path="as.csv")
 
     # ── 4. Select sink mode ────────────────
     #

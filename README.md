@@ -81,6 +81,19 @@ Path attribute handling in pyspark-import/parse_bgp.py:
 4. type=3 (NEXT_HOP): parse IPv4 next_hop
 5. NLRI: parse IPv4 prefixes from UPDATE tail
 
+## Organization Lookup (AS Metadata)
+
+ASN → Organization mappings from [ipverse/as-metadata](https://github.com/ipverse/as-metadata):
+
+- As.csv file is read at stream startup and broadcast to all Spark workers
+- Each as_path array is mapped to organization names in-place
+- Unknown ASNs default to `AS{number}` format (e.g., `AS65000`)
+
+Download as.csv:
+```bash
+curl -O https://raw.githubusercontent.com/ipverse/as-metadata/master/as.csv
+```
+
 ## Sink Selection
 
 Change sink_fn in pyspark-import/main.py:
@@ -94,12 +107,12 @@ Change sink_fn in pyspark-import/main.py:
 Input (Suricata eve.json BGP update):
 
 ```json
-{"timestamp":"2022-08-24T17:13:25.029636+0000","flow_id":939008963394962,"pcap_cnt":26,"event_type":"bgp","src_ip":"192.168.51.1","src_port":179,"dest_ip":"192.168.51.2","dest_port":54402,"proto":"TCP","ip_v":4,"pkt_src":"wire/pcap","bgp":{"message_type":"update","payload_length":42,"payload":"00000023400101005002000602010000fde8400304c0a8330180040400000000c00804007b01c8100a0a"}}
+{"timestamp":"2022-08-24T17:13:25.029636+0000","flow_id":939008963394962,"pcap_cnt":26,"event_type":"bgp","src_ip":"192.168.51.1","src_port":179,"dest_ip":"192.168.51.2","dest_port":54402,"proto":"TCP","ip_v":4,"pkt_src":"wire/pcap","vlan":[100],"bgp":{"message_type":"update","payload_length":42,"payload":"00000023400101005002000602010000fde8400304c0a8330180040400000000c00804007b01c8100a0a"}}
 ```
 
 Output shape:
 
 ```json
-{"timestamp":"2022-08-24T17:13:25.029636+0000","flow_id":939008963394962,"pcap_cnt":26,"event_type":"bgp","src_ip":"192.168.51.1","src_port":179,"dest_ip":"192.168.51.2","dest_port":54402,"proto":"TCP","ip_v":4,"pkt_src":"wire/pcap","bgp":{"message_type":"update","as_path":[65000],"next_hop":"192.168.51.1","nlri":["10.10.0.0/16"]}}
+{"timestamp":"2022-08-24T17:13:25.029636+0000","flow_id":939008963394962,"pcap_cnt":26,"event_type":"bgp","src_ip":"192.168.51.1","src_port":179,"dest_ip":"192.168.51.2","dest_port":54402,"proto":"TCP","ip_v":4,"pkt_src":"wire/pcap","vlan":[100],"bgp":{"message_type":"update","as_path":[0,1],"organization":["Internet Assigned Numbers Authority","Level 3 Parent LLC"],"next_hop":"192.168.51.1","nlri":["10.10.0.0/16"]}}
 ```
 
