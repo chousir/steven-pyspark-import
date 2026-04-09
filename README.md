@@ -1,7 +1,7 @@
 # PySpark Import (Simple)
 
 - Read messages from Kafka
-- Process one micro-batch every 30 seconds
+- Process one micro-batch at configurable intervals
 - Write to Sink (Elasticsearch, FTP) via `foreachBatch`
 
 ## Project Structure
@@ -10,7 +10,7 @@
 .
 ├── application.conf
 ├── README.md
-├── requestments
+├── requirements.txt
 └── pyspark-import
     ├── main.py
     └── writer.py
@@ -20,10 +20,10 @@
 
 ```bash
 # Install dependencies
-pip install -r requestments
+pip install -r requirements.txt
 
-# Export config file path (or use default application.conf)
-export APP_CONFIG_FILE=/path/to/application.conf
+# Optional: override config path (defaults to application.conf)
+export IMPORT_CONFIG=/path/to/application.conf
 
 # Run the application
 python pyspark-import/main.py
@@ -42,6 +42,7 @@ kafka {
 }
 spark {
     checkpoint: "/path/to/checkpoint"
+    triggerProcessingTime: "30 seconds"
 }
 elasticsearch {
     url: "https://localhost:9200"

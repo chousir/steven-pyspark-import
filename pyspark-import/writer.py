@@ -13,6 +13,7 @@ import uuid
 import ftplib
 
 from pyspark.sql import DataFrame
+from pyspark.storagelevel import StorageLevel
 
 
 # ─────────────────────────────────────────────
@@ -136,14 +137,18 @@ def write_batch_to_all(
     es_kwargs  : Keyword arguments dict for write_batch_to_es
     ftp_kwargs : Keyword arguments dict for write_batch_to_ftp
     """
-    print(f"[Batch {batch_id}] Processing {batch_df.count()} records...")
-
+    cached_df = batch_df.persist(StorageLevel.MEMORY_AND_DISK)
     try:
-        write_batch_to_es(batch_df, batch_id, **es_kwargs)
-    except Exception as e:
-        print(f"[ES]  FATAL on batch {batch_id}: {e}")
+        print(f"[Batch {batch_id}] Processing {cached_df.count()} records...")
 
-    try:
-        write_batch_to_ftp(batch_df, batch_id, **ftp_kwargs)
-    except Exception as e:
-        print(f"[FTP] FATAL on batch {batch_id}: {e}")
+        try:
+            write_batch_to_es(cached_df, batch_id, **es_kwargs)
+        except Exception as e:
+            print(f"[ES]  FATAL on batch {batch_id}: {e}")
+
+        try:
+            write_batch_to_ftp(cached_df, batch_id, **ftp_kwargs)
+        except Exception as e:
+            print(f"[FTP] FATAL on batch {batch_id}: {e}")
+    finally:
+        cached_df.unpersist(blocking=False)
