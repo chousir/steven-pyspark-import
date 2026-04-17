@@ -76,7 +76,7 @@ class TestParseBgp(unittest.TestCase):
 
         self.assertIsNone(parse_bgp.parse_single_event(raw))
 
-    def test_parse_single_event_includes_as_fields(self) -> None:
+    def test_parse_single_event_includes_asn_info(self) -> None:
         raw = json.dumps(
             {
                 "event_type": "bgp",
@@ -91,13 +91,11 @@ class TestParseBgp(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertIn("bgp", result)
-        self.assertIn("handle", result["bgp"])
-        self.assertIn("description", result["bgp"])
-        self.assertIn("country-code", result["bgp"])
+        asn_info = result["bgp"]["asn_info"]
         # AS 65200 and 65000 are both private ASNs
-        self.assertEqual(result["bgp"]["handle"], ["AS65200", "AS65000"])
-        self.assertEqual(result["bgp"]["description"], ["Private AS", "Private AS"])
-        self.assertEqual(result["bgp"]["country-code"], ["", ""])
+        self.assertEqual(len(asn_info), 2)
+        self.assertEqual(asn_info[0], {"asn": 65200, "handle": "AS65200", "description": "Private AS", "country_code": ""})
+        self.assertEqual(asn_info[1], {"asn": 65000, "handle": "AS65000", "description": "Private AS", "country_code": ""})
 
     # ── VLAN alias ────────────────────────────────────────────
 

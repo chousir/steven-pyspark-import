@@ -62,12 +62,15 @@ ASN_ORG_SCHEMA = T.StructType(
 )
 
 
-_AS_INFO_SCHEMA = T.StructType(
-	[
-		T.StructField("handle", T.ArrayType(T.StringType()), True),
-		T.StructField("description", T.ArrayType(T.StringType()), True),
-		T.StructField("country_code", T.ArrayType(T.StringType()), True),
-	]
+_AS_INFO_SCHEMA = T.ArrayType(
+	T.StructType(
+		[
+			T.StructField("asn", T.IntegerType(), True),
+			T.StructField("handle", T.StringType(), True),
+			T.StructField("description", T.StringType(), True),
+			T.StructField("country_code", T.StringType(), True),
+		]
+	)
 )
 
 
@@ -317,7 +320,7 @@ def parse_bgp_updates(
 
 	Output:
 	- One row per BGP UPDATE event.
-	- `bgp` struct contains `message_type`, `as_path`, `handle`, `description`, `country-code`, `next_hop`, `nlri`.
+	- `bgp` struct contains `message_type`, `asn_info` (array of structs with asn/handle/description/country_code), `next_hop`, `nlri`.
 	- `alias`: VLAN alias resolved via ``vlan_map_alias_url``; falls back to ``default_alias``.
 	"""
 	parsed = (
@@ -342,17 +345,15 @@ def parse_bgp_updates(
 	}
 	asn_dict_broadcast = spark.sparkContext.broadcast(asn_dict)
 
-	def _map_asn_to_info(asn_list: list[int]) -> dict:
+	def _map_asn_to_info(asn_list: list[int]) -> list[dict]:
 		if not asn_list:
-			return {"handle": [], "description": [], "country_code": []}
+			return []
 		asn_map = asn_dict_broadcast.value
-		handles, descriptions, country_codes = [], [], []
+		result = []
 		for asn in asn_list:
 			h, d, c = _asn_info(asn, asn_map)
-			handles.append(h)
-			descriptions.append(d)
-			country_codes.append(c)
-		return {"handle": handles, "description": descriptions, "country_code": country_codes}
+			result.append({"asn": asn, "handle": h, "description": d, "country_code": c})
+		return result
 
 	_map_asn_udf = F.udf(_map_asn_to_info, _AS_INFO_SCHEMA)
 
@@ -371,10 +372,7 @@ def parse_bgp_updates(
 			"bgp",
 			F.struct(
 				F.col("bgp.message_type").alias("message_type"),
-				F.col("parsed_bgp.as_path").alias("as_path"),
-				F.col("as_info.handle").alias("handle"),
-				F.col("as_info.description").alias("description"),
-				F.col("as_info.country_code").alias("country-code"),
+				F.col("as_info").alias("asn_info"),
 				F.col("parsed_bgp.next_hop").alias("next_hop"),
 				F.col("parsed_bgp.nlri").alias("nlri"),
 			),
@@ -405,18 +403,13 @@ def parse_single_event(
 
 	parsed = parse_bgp_update_payload(bgp.get("payload"))
 	asn_map = _load_asn_org_map(asn_csv_path)
-	handles, descriptions, country_codes = [], [], []
+	asn_info = []
 	for asn in parsed["as_path"]:
 		h, d, c = _asn_info(asn, asn_map)
-		handles.append(h)
-		descriptions.append(d)
-		country_codes.append(c)
+		asn_info.append({"asn": asn, "handle": h, "description": d, "country_code": c})
 	event["bgp"] = {
 		"message_type": "update",
-		"as_path": parsed["as_path"],
-		"handle": handles,
-		"description": descriptions,
-		"country-code": country_codes,
+		"asn_info": asn_info,
 		"next_hop": parsed["next_hop"],
 		"nlri": parsed["nlri"],
 	}

@@ -2,18 +2,104 @@
 writer.py
 ─────────────────────────────────────────────────────────────
 Sink writer modules
-  - write_batch_to_es  : Write to Elasticsearch
-  - write_batch_to_ftp : Upload to FTP server (UUID-named files)
-  - write_batch_to_all : Write to both sinks synchronously
+  - create_es_index_template : Register ES index template (IP field types)
+  - write_batch_to_es        : Write to Elasticsearch
+  - write_batch_to_ftp       : Upload to FTP server (UUID-named files)
+  - write_batch_to_all       : Write to both sinks synchronously
 ─────────────────────────────────────────────────────────────
 """
 
+import base64
 import io
+import json
+import ssl
+import urllib.error
+import urllib.request
 import uuid
 import ftplib
 
 from pyspark.sql import DataFrame
 from pyspark.storagelevel import StorageLevel
+
+
+# ─────────────────────────────────────────────
+# Elasticsearch Index Template
+# ─────────────────────────────────────────────
+
+#: Field mapping applied by create_es_index_template.
+#: src_ip / dest_ip / bgp.next_hop → ip
+#: bgp.nlri                        → ip_range  (array of CIDR strings)
+_BGP_IP_MAPPINGS: dict = {
+    "properties": {
+        "src_ip":  {"type": "ip"},
+        "dest_ip": {"type": "ip"},
+        "bgp": {
+            "type": "object",
+            "properties": {
+                "next_hop": {"type": "ip"},
+                "nlri":     {"type": "ip_range"},
+            },
+        },
+    }
+}
+
+
+def create_es_index_template(
+    *,
+    es_user:          str,
+    es_password:      str,
+    es_url:           str,
+    es_port:          str,
+    es_index:         str,
+    template_name:    str = "bgp-template",
+) -> None:
+    """Register an Elasticsearch index template that forces IP field types.
+
+    Must be called once before writing data so that ES dynamic mapping does
+    not coerce src_ip / dest_ip / bgp.next_hop / bgp.nlri to text/keyword.
+
+    Parameters
+    ----------
+    es_user        : Elasticsearch username
+    es_password    : Elasticsearch password
+    es_url         : Elasticsearch node URL (hostname or IP, no scheme)
+    es_port        : Elasticsearch port
+    es_index       : Index pattern the template applies to (e.g. ``bgp-*``)
+    template_name  : Name of the composable index template in ES
+    """
+    template_body = {
+        "index_patterns": [es_index],
+        "template": {
+            "mappings": _BGP_IP_MAPPINGS,
+        },
+    }
+
+    url = f"https://{es_url}:{es_port}/_index_template/{template_name}"
+    body = json.dumps(template_body).encode("utf-8")
+
+    credentials = base64.b64encode(f"{es_user}:{es_password}".encode()).decode()
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="PUT",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Basic {credentials}",
+        },
+    )
+
+    ssl_ctx = ssl.create_default_context()
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = ssl.CERT_NONE
+
+    try:
+        with urllib.request.urlopen(req, context=ssl_ctx, timeout=30) as resp:
+            print(f"[ES] Index template '{template_name}' registered (HTTP {resp.status})")
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(
+            f"[ES] Failed to register index template '{template_name}': "
+            f"HTTP {exc.code} {exc.reason}"
+        ) from exc
 
 
 # ─────────────────────────────────────────────
