@@ -1,11 +1,8 @@
 # PySpark Import
 
-PySpark Structured Streaming pipeline for Suricata BGP eve.json events:
-
-1. Read messages from Kafka
-2. Parse only BGP UPDATE messages
-3. Extract AS_PATH, NEXT_HOP, and NLRI
-4. Write micro-batches to Elasticsearch and/or FTP via foreachBatch
+- Read messages from Kafka
+- Process one micro-batch at configurable intervals
+- Write to Sink (Elasticsearch, FTP) via `foreachBatch`
 
 ## Project Structure
 
@@ -27,7 +24,7 @@ PySpark Structured Streaming pipeline for Suricata BGP eve.json events:
 pip install -r requirements.txt
 
 # Optional: override config path (defaults to application.conf)
-export APP_CONFIG_FILE=/path/to/application.conf
+export IMPORT_CONFIG=/path/to/application.conf
 
 # Run streaming job
 python pyspark-import/main.py
@@ -46,6 +43,7 @@ kafka {
 }
 spark {
     checkpoint: "/path/to/checkpoint"
+    triggerProcessingTime: "30 seconds"
 }
 elasticsearch {
     url: "https://localhost:9200"

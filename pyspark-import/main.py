@@ -22,9 +22,9 @@ from writer import write_batch_to_es, write_batch_to_ftp, write_batch_to_all
 # ─────────────────────────────────────────────
 # Configuration Loading (HOCON format)
 # ─────────────────────────────────────────────
-# Supports environment variable APP_CONFIG_FILE to override
+# Supports environment variable IMPORT_CONFIG to override
 # default config path
-config_path = os.getenv("APP_CONFIG_FILE", "application.conf")
+config_path = os.getenv("IMPORT_CONFIG", "application.conf")
 config = ConfigFactory.parse_file(config_path)
 
 
@@ -41,6 +41,9 @@ def get_conf(*keys: str, default=None, required: bool = True):
 
 
 checkpoint_location = get_conf("spark.checkpoint", "spark.checkpoint")
+spark_trigger_processing_time = str(
+    get_conf("spark.triggerProcessingTime", default="30 seconds", required=False)
+)
 
 kafka_bootstrap_servers = get_conf("kafka.input.brokers", "kafka.input.brokers")
 kafka_topic = get_conf("kafka.input.topic")
@@ -125,7 +128,11 @@ def main():
     #  │               es_kwargs=ES_KWARGS, ftp_kwargs=FTP_KWARGS)  │
     #  └────────────────────────────────────────────────────────────┘
     #
-    sink_fn = partial(write_batch_to_ftp, **FTP_KWARGS)   # Change as needed
+    sink_fn = partial(
+        write_batch_to_all,
+        es_kwargs=ES_KWARGS,
+        ftp_kwargs=FTP_KWARGS,
+    )
 
     # ── 5. Start streaming ─────────────────
     query = (
@@ -133,7 +140,7 @@ def main():
         .foreachBatch(sink_fn)
         .option("checkpointLocation", checkpoint_location)
         .outputMode("append")
-        .trigger(processingTime="30 seconds")
+        .trigger(processingTime=spark_trigger_processing_time)
         .start()
     )
 
