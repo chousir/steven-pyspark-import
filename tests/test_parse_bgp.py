@@ -4,6 +4,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 
 def _install_pyspark_stubs() -> None:
@@ -97,6 +98,79 @@ class TestParseBgp(unittest.TestCase):
         self.assertEqual(result["bgp"]["handle"], ["AS65200", "AS65000"])
         self.assertEqual(result["bgp"]["description"], ["Private AS", "Private AS"])
         self.assertEqual(result["bgp"]["country-code"], ["", ""])
+
+    # ── VLAN alias ────────────────────────────────────────────
+
+    def _make_mock_resp(self, body: bytes) -> MagicMock:
+        resp = MagicMock()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.read.return_value = body
+        return resp
+
+    def test_query_vlan_alias_returns_stripped_response(self) -> None:
+        with patch("urllib.request.urlopen", return_value=self._make_mock_resp(b"core-sw\n")) as mock_open:
+            result = parse_bgp._query_vlan_alias([104], "http://vlan_map_alias")
+            mock_open.assert_called_once_with("http://vlan_map_alias?vlan=104", timeout=5)
+            self.assertEqual(result, "core-sw")
+
+    def test_query_vlan_alias_empty_list_returns_default(self) -> None:
+        result = parse_bgp._query_vlan_alias([], "http://vlan_map_alias", default_alias="fallback")
+        self.assertEqual(result, "fallback")
+
+    def test_query_vlan_alias_no_url_returns_default(self) -> None:
+        result = parse_bgp._query_vlan_alias([104], "", default_alias="fallback")
+        self.assertEqual(result, "fallback")
+
+    def test_query_vlan_alias_http_error_returns_default(self) -> None:
+        with patch("urllib.request.urlopen", side_effect=Exception("connection refused")):
+            result = parse_bgp._query_vlan_alias([104], "http://vlan_map_alias", default_alias="fallback")
+            self.assertEqual(result, "fallback")
+
+    def test_query_vlan_alias_empty_response_returns_default(self) -> None:
+        with patch("urllib.request.urlopen", return_value=self._make_mock_resp(b"")):
+            result = parse_bgp._query_vlan_alias([104], "http://vlan_map_alias", default_alias="fallback")
+            self.assertEqual(result, "fallback")
+
+    def test_parse_single_event_includes_alias_field(self) -> None:
+        raw = json.dumps(
+            {
+                "event_type": "bgp",
+                "vlan": [104],
+                "bgp": {
+                    "message_type": "update",
+                    "payload": "00000024400101005002000a02020000feb00000fde8400304c0a83202c00808007b01c80141028e100a14",
+                },
+            }
+        )
+
+        with patch("urllib.request.urlopen", return_value=self._make_mock_resp(b"core-sw")):
+            result = parse_bgp.parse_single_event(raw, vlan_map_alias_url="http://vlan_map_alias")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["alias"], "core-sw")
+
+    def test_parse_single_event_alias_uses_default_when_no_vlan(self) -> None:
+        raw = json.dumps(
+            {
+                "event_type": "bgp",
+                "bgp": {
+                    "message_type": "update",
+                    "payload": "00000024400101005002000a02020000feb00000fde8400304c0a83202c00808007b01c80141028e100a14",
+                },
+            }
+        )
+
+        result = parse_bgp.parse_single_event(
+            raw,
+            vlan_map_alias_url="http://vlan_map_alias",
+            default_alias="default-alias",
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["alias"], "default-alias")
+
+    # ── ASN info ──────────────────────────────────────────────
 
     def test_asn_info_returns_correct_tuple(self) -> None:
         asn_map = {

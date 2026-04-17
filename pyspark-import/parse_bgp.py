@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import ipaddress
 import json
+import urllib.request
 from functools import lru_cache
 from typing import Any
 
@@ -277,17 +278,47 @@ def parse_bgp_update_payload(payload_hex: str | None) -> dict[str, Any]:
 _parse_bgp_update_udf = F.udf(parse_bgp_update_payload, BGP_PARSE_SCHEMA)
 
 
-def parse_bgp_updates(df: DataFrame, value_col: str = "value", asn_csv_path: str = "as.csv") -> DataFrame:
+def _query_vlan_alias(
+	vlan_list: list[int] | None,
+	vlan_map_alias_url: str,
+	default_alias: str = "",
+) -> str:
+	"""Fetch alias for the first VLAN in *vlan_list* from {vlan_map_alias_url}?vlan=<id>.
+
+	Returns *default_alias* when vlan_list is empty, the URL is not configured,
+	or the HTTP request fails.
+	"""
+	if not vlan_list or not vlan_map_alias_url:
+		return default_alias
+	try:
+		url = f"{vlan_map_alias_url}?vlan={vlan_list[0]}"
+		with urllib.request.urlopen(url, timeout=5) as resp:
+			result = resp.read().decode("utf-8").strip()
+			return result if result else default_alias
+	except Exception:
+		return default_alias
+
+
+def parse_bgp_updates(
+	df: DataFrame,
+	value_col: str = "value",
+	asn_csv_path: str = "as.csv",
+	vlan_map_alias_url: str = "",
+	default_alias: str = "",
+) -> DataFrame:
 	"""
 	Parse Suricata eve.json records and keep only BGP UPDATE events.
 
 	Input:
 	- `df` must contain a JSON string column (default `value`).
 	- `asn_csv_path`: path to as-metadata CSV for ASN → Organization lookup.
+	- `vlan_map_alias_url`: full URL used to resolve VLAN aliases (e.g. ``http://vlan_map_alias``).
+	- `default_alias`: fallback value for `alias` when VLAN is absent or lookup fails.
 
 	Output:
 	- One row per BGP UPDATE event.
 	- `bgp` struct contains `message_type`, `as_path`, `handle`, `description`, `country-code`, `next_hop`, `nlri`.
+	- `alias`: VLAN alias resolved via ``vlan_map_alias_url``; falls back to ``default_alias``.
 	"""
 	parsed = (
 		df.withColumn("json", F.from_json(F.col(value_col), EVE_BGP_SCHEMA))
@@ -325,6 +356,14 @@ def parse_bgp_updates(df: DataFrame, value_col: str = "value", asn_csv_path: str
 
 	_map_asn_udf = F.udf(_map_asn_to_info, _AS_INFO_SCHEMA)
 
+	_alias_url = vlan_map_alias_url
+	_alias_default = default_alias
+
+	def _fetch_alias(vlan_list: list[int]) -> str:
+		return _query_vlan_alias(vlan_list, _alias_url, _alias_default)
+
+	_fetch_alias_udf = F.udf(_fetch_alias, T.StringType())
+
 	return (
 		parsed.withColumn("parsed_bgp", parsed_fields)
 		.withColumn("as_info", _map_asn_udf(F.col("parsed_bgp.as_path")))
@@ -340,11 +379,17 @@ def parse_bgp_updates(df: DataFrame, value_col: str = "value", asn_csv_path: str
 				F.col("parsed_bgp.nlri").alias("nlri"),
 			),
 		)
+		.withColumn("alias", _fetch_alias_udf(F.col("vlan")))
 		.drop("parsed_bgp", "as_info")
 	)
 
 
-def parse_single_event(raw_json: str, asn_csv_path: str = "as.csv") -> dict[str, Any] | None:
+def parse_single_event(
+	raw_json: str,
+	asn_csv_path: str = "as.csv",
+	vlan_map_alias_url: str = "",
+	default_alias: str = "",
+) -> dict[str, Any] | None:
 	"""Parse one eve.json string into output shape used by parse_bgp_updates."""
 	try:
 		event = json.loads(raw_json)
@@ -375,4 +420,5 @@ def parse_single_event(raw_json: str, asn_csv_path: str = "as.csv") -> dict[str,
 		"next_hop": parsed["next_hop"],
 		"nlri": parsed["nlri"],
 	}
+	event["alias"] = _query_vlan_alias(event.get("vlan"), vlan_map_alias_url, default_alias)
 	return event
