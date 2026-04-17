@@ -51,6 +51,94 @@ def _make_mock_resp(status: int = 200) -> MagicMock:
     return resp
 
 
+_FTP_KWARGS = dict(
+    ftp_hostname="ftp.example.com",
+    ftp_user="ftpuser",
+    ftp_password="ftppass",
+    ftp_remote_path="/uploads",
+)
+
+
+def _make_mock_df(empty: bool = False, num_partitions: int = 2) -> MagicMock:
+    df = MagicMock()
+    df.isEmpty.return_value = empty
+    df.rdd.getNumPartitions.return_value = num_partitions
+    df.foreachPartition = MagicMock()
+    return df
+
+
+class TestWriteBatchToFtp(unittest.TestCase):
+
+    def test_empty_batch_skips(self) -> None:
+        df = _make_mock_df(empty=True)
+        writer.write_batch_to_ftp(df, 0, **_FTP_KWARGS)
+        df.foreachPartition.assert_not_called()
+
+    def test_uses_foreach_partition_not_collect(self) -> None:
+        df = _make_mock_df()
+        writer.write_batch_to_ftp(df, 1, **_FTP_KWARGS)
+        df.foreachPartition.assert_called_once()
+        df.toJSON.assert_not_called()
+
+    def test_partition_fn_uploads_rows_as_jsonl(self) -> None:
+        df = _make_mock_df()
+        writer.write_batch_to_ftp(df, 1, **_FTP_KWARGS)
+
+        partition_fn = df.foreachPartition.call_args[0][0]
+
+        mock_row = MagicMock()
+        mock_row.asDict.return_value = {"src_ip": "1.2.3.4", "dest_ip": "5.6.7.8"}
+
+        mock_ftp = MagicMock()
+        mock_ftp.__enter__ = lambda s: s
+        mock_ftp.__exit__ = MagicMock(return_value=False)
+
+        with patch("ftplib.FTP", return_value=mock_ftp):
+            partition_fn([mock_row])
+
+        mock_ftp.login.assert_called_once_with(user="ftpuser", passwd="ftppass")
+        cmd, buf = mock_ftp.storbinary.call_args[0]
+        self.assertTrue(cmd.startswith("STOR /uploads/"))
+        content = buf.read().decode()
+        self.assertIn('"src_ip": "1.2.3.4"', content)
+
+    def test_partition_fn_skips_empty_partition(self) -> None:
+        df = _make_mock_df()
+        writer.write_batch_to_ftp(df, 1, **_FTP_KWARGS)
+
+        partition_fn = df.foreachPartition.call_args[0][0]
+
+        with patch("ftplib.FTP") as mock_ftp_cls:
+            partition_fn([])
+            mock_ftp_cls.assert_not_called()
+
+    def test_partition_fn_each_partition_gets_unique_filename(self) -> None:
+        df = _make_mock_df()
+        writer.write_batch_to_ftp(df, 1, **_FTP_KWARGS)
+
+        partition_fn = df.foreachPartition.call_args[0][0]
+
+        mock_row = MagicMock()
+        mock_row.asDict.return_value = {"x": 1}
+
+        uploaded_files = []
+
+        def capture_stor(cmd, _buf):
+            uploaded_files.append(cmd)
+
+        mock_ftp = MagicMock()
+        mock_ftp.__enter__ = lambda s: s
+        mock_ftp.__exit__ = MagicMock(return_value=False)
+        mock_ftp.storbinary.side_effect = capture_stor
+
+        with patch("ftplib.FTP", return_value=mock_ftp):
+            partition_fn([mock_row])
+            partition_fn([mock_row])
+
+        self.assertEqual(len(uploaded_files), 2)
+        self.assertNotEqual(uploaded_files[0], uploaded_files[1])
+
+
 class TestCreateEsIndexTemplate(unittest.TestCase):
 
     def test_puts_to_correct_url(self) -> None:

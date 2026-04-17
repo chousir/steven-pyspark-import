@@ -56,6 +56,7 @@ class TestParseBgp(unittest.TestCase):
         self.assertEqual(result["as_path"], [65000])
         self.assertEqual(result["next_hop"], "192.168.51.1")
         self.assertEqual(result["nlri"], ["10.10.0.0/16"])
+        self.assertIsNone(result["parse_error"])
 
     def test_parse_bgp_update_multiple_as(self) -> None:
         payload = "00000024400101005002000a02020000feb00000fde8400304c0a83202c00808007b01c80141028e100a14"
@@ -65,6 +66,23 @@ class TestParseBgp(unittest.TestCase):
         self.assertEqual(result["as_path"], [65200, 65000])
         self.assertEqual(result["next_hop"], "192.168.50.2")
         self.assertEqual(result["nlri"], ["10.20.0.0/16"])
+        self.assertIsNone(result["parse_error"])
+
+    def test_parse_bgp_update_empty_payload_has_no_error(self) -> None:
+        result = parse_bgp.parse_bgp_update_payload(None)
+        self.assertIsNone(result["parse_error"])
+
+    def test_parse_bgp_update_invalid_hex_sets_parse_error(self) -> None:
+        result = parse_bgp.parse_bgp_update_payload("not-valid-hex!")
+        self.assertIsNotNone(result["parse_error"])
+        self.assertIn("ValueError", result["parse_error"])
+        self.assertEqual(result["as_path"], [])
+
+    def test_parse_bgp_update_truncated_payload_sets_parse_error(self) -> None:
+        # 4-byte payload is too short to contain a valid BGP UPDATE header
+        result = parse_bgp.parse_bgp_update_payload("deadbeef")
+        self.assertIsNotNone(result["parse_error"])
+        self.assertIn("truncated", result["parse_error"])
 
     def test_parse_single_event_non_update_returns_none(self) -> None:
         raw = json.dumps(
@@ -75,6 +93,19 @@ class TestParseBgp(unittest.TestCase):
         )
 
         self.assertIsNone(parse_bgp.parse_single_event(raw))
+
+    def test_parse_single_event_has_parse_error_field(self) -> None:
+        raw = json.dumps(
+            {
+                "event_type": "bgp",
+                "bgp": {
+                    "message_type": "update",
+                    "payload": "00000024400101005002000a02020000feb00000fde8400304c0a83202c00808007b01c80141028e100a14",
+                },
+            }
+        )
+        result = parse_bgp.parse_single_event(raw)
+        self.assertIsNone(result["bgp"]["parse_error"])
 
     def test_parse_single_event_includes_asn_info(self) -> None:
         raw = json.dumps(

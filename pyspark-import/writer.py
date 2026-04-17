@@ -170,7 +170,10 @@ def write_batch_to_ftp(
 ) -> None:
     """
     Upload each micro-batch of data to FTP server in JSON Lines format.
-    Each batch produces a UUID-named .json file to ensure uniqueness.
+
+    Each Executor uploads its own partition directly to FTP without sending
+    data back to the Driver, avoiding Driver OOM on large batches.
+    Each partition produces one UUID-named .json file.
 
     Parameters
     ----------
@@ -185,21 +188,31 @@ def write_batch_to_ftp(
         print(f"[FTP] Batch {batch_id} is empty, skipping.")
         return
 
-    # Convert each row to JSON string and encode as bytes in JSON Lines format
-    rows_json    = batch_df.toJSON().collect()
-    json_content = "\n".join(rows_json).encode("utf-8")
+    # Capture into local variables so the closure serialises only the values,
+    # not the entire enclosing frame.
+    _hostname = ftp_hostname
+    _user     = ftp_user
+    _password = ftp_password
+    _path     = ftp_remote_path
 
-    # Use UUID to ensure absolute uniqueness of filenames
-    remote_file = f"{ftp_remote_path}/{uuid.uuid4()}.json"
+    def _upload_partition(rows) -> None:
+        import ftplib
+        import io
+        import json
+        import uuid as _uuid
 
-    try:
-        with ftplib.FTP(ftp_hostname) as ftp:
-            ftp.login(user=ftp_user, passwd=ftp_password)
-            ftp.storbinary(f"STOR {remote_file}", io.BytesIO(json_content))
-        print(f"[FTP] Batch {batch_id} uploaded → {remote_file}")
-    except ftplib.all_errors as e:
-        print(f"[FTP] ERROR on batch {batch_id}: {e}")
-        raise
+        lines = [json.dumps(row.asDict()) for row in rows]
+        if not lines:
+            return
+        content     = "\n".join(lines).encode("utf-8")
+        remote_file = f"{_path}/{_uuid.uuid4()}.json"
+        with ftplib.FTP(_hostname) as ftp:
+            ftp.login(user=_user, passwd=_password)
+            ftp.storbinary(f"STOR {remote_file}", io.BytesIO(content))
+
+    num_partitions = batch_df.rdd.getNumPartitions()
+    batch_df.foreachPartition(_upload_partition)
+    print(f"[FTP] Batch {batch_id} uploaded ({num_partitions} partitions) → {_path}")
 
 
 # ─────────────────────────────────────────────

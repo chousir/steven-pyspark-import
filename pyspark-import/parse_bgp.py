@@ -48,6 +48,7 @@ BGP_PARSE_SCHEMA = T.StructType(
 		T.StructField("as_path", T.ArrayType(T.IntegerType()), True),
 		T.StructField("next_hop", T.StringType(), True),
 		T.StructField("nlri", T.ArrayType(T.StringType()), True),
+		T.StructField("parse_error", T.StringType(), True),
 	]
 )
 
@@ -206,17 +207,20 @@ def parse_bgp_update_payload(payload_hex: str | None) -> dict[str, Any]:
 	"""
 	Parse BGP UPDATE payload hex string.
 
-	Returns a dict with keys: as_path, next_hop, nlri.
-	If parsing fails, returns empty values instead of raising.
+	Returns a dict with keys: as_path, next_hop, nlri, parse_error.
+	parse_error is None on success or when payload is absent (legitimate empty).
+	On any failure it contains a descriptive string so callers can monitor
+	parse failure rates without data loss.
 	"""
-	result: dict[str, Any] = {"as_path": [], "next_hop": None, "nlri": []}
+	result: dict[str, Any] = {"as_path": [], "next_hop": None, "nlri": [], "parse_error": None}
 
 	if not payload_hex:
 		return result
 
 	try:
 		payload = bytes.fromhex(payload_hex)
-	except ValueError:
+	except ValueError as exc:
+		result["parse_error"] = f"ValueError: {exc}"
 		return result
 
 	try:
@@ -226,6 +230,7 @@ def parse_bgp_update_payload(payload_hex: str | None) -> dict[str, Any]:
 
 		withdrawn_len, offset = _read_u16(payload, offset)
 		if offset + withdrawn_len > len(payload):
+			result["parse_error"] = "truncated: withdrawn routes overflow packet boundary"
 			return result
 
 		offset += withdrawn_len
@@ -233,6 +238,7 @@ def parse_bgp_update_payload(payload_hex: str | None) -> dict[str, Any]:
 		path_attr_len, offset = _read_u16(payload, offset)
 		path_attr_end = offset + path_attr_len
 		if path_attr_end > len(payload):
+			result["parse_error"] = "truncated: path attributes overflow packet boundary"
 			return result
 
 		while offset < path_attr_end:
@@ -274,7 +280,8 @@ def parse_bgp_update_payload(payload_hex: str | None) -> dict[str, Any]:
 
 		result["nlri"] = _parse_prefix_list(payload[path_attr_end:])
 		return result
-	except Exception:
+	except Exception as exc:
+		result["parse_error"] = f"{type(exc).__name__}: {exc}"
 		return result
 
 
@@ -375,6 +382,7 @@ def parse_bgp_updates(
 				F.col("as_info").alias("asn_info"),
 				F.col("parsed_bgp.next_hop").alias("next_hop"),
 				F.col("parsed_bgp.nlri").alias("nlri"),
+				F.col("parsed_bgp.parse_error").alias("parse_error"),
 			),
 		)
 		.withColumn("alias", _fetch_alias_udf(F.col("vlan")))
@@ -412,6 +420,7 @@ def parse_single_event(
 		"asn_info": asn_info,
 		"next_hop": parsed["next_hop"],
 		"nlri": parsed["nlri"],
+		"parse_error": parsed["parse_error"],
 	}
 	event["alias"] = _query_vlan_alias(event.get("vlan"), vlan_map_alias_url, default_alias)
 	return event
