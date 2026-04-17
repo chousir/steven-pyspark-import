@@ -54,7 +54,18 @@ BGP_PARSE_SCHEMA = T.StructType(
 ASN_ORG_SCHEMA = T.StructType(
 	[
 		T.StructField("asn", T.IntegerType(), True),
+		T.StructField("handle", T.StringType(), True),
 		T.StructField("description", T.StringType(), True),
+		T.StructField("country_code", T.StringType(), True),
+	]
+)
+
+
+_AS_INFO_SCHEMA = T.StructType(
+	[
+		T.StructField("handle", T.ArrayType(T.StringType()), True),
+		T.StructField("description", T.ArrayType(T.StringType()), True),
+		T.StructField("country_code", T.ArrayType(T.StringType()), True),
 	]
 )
 
@@ -156,27 +167,30 @@ def _is_private_asn(asn: int) -> bool:
 	return (64512 <= asn <= 65534) or (4200000000 <= asn <= 4294967294)
 
 
-def _organization_for_asn(asn: int, asn_map: dict[int, str]) -> str:
+def _asn_info(asn: int, asn_map: dict[int, tuple[str, str, str]]) -> tuple[str, str, str]:
 	if asn in asn_map:
 		return asn_map[asn]
 	if _is_private_asn(asn):
-		return "Private AS"
-	return f"AS{asn}"
+		return (f"AS{asn}", "Private AS", "")
+	return (f"AS{asn}", f"AS{asn}", "")
 
 
 @lru_cache(maxsize=4)
-def _load_asn_org_map(asn_csv_path: str) -> dict[int, str]:
-	asn_map: dict[int, str] = {}
+def _load_asn_org_map(asn_csv_path: str) -> dict[int, tuple[str, str, str]]:
+	asn_map: dict[int, tuple[str, str, str]] = {}
 	try:
 		with open(asn_csv_path, newline="", encoding="utf-8") as csv_file:
 			reader = csv.DictReader(csv_file)
 			for row in reader:
 				asn_raw = row.get("asn")
-				description = row.get("description")
-				if asn_raw is None or description is None:
+				if asn_raw is None:
 					continue
 				try:
-					asn_map[int(asn_raw)] = description
+					asn_map[int(asn_raw)] = (
+						row.get("handle") or "",
+						row.get("description") or "",
+						row.get("country-code") or "",
+					)
 				except ValueError:
 					continue
 	except OSError:
@@ -273,7 +287,7 @@ def parse_bgp_updates(df: DataFrame, value_col: str = "value", asn_csv_path: str
 
 	Output:
 	- One row per BGP UPDATE event.
-	- `bgp` struct contains `message_type`, `as_path`, `next_hop`, `nlri`, `organization`.
+	- `bgp` struct contains `message_type`, `as_path`, `handle`, `description`, `country-code`, `next_hop`, `nlri`.
 	"""
 	parsed = (
 		df.withColumn("json", F.from_json(F.col(value_col), EVE_BGP_SCHEMA))
@@ -283,41 +297,50 @@ def parse_bgp_updates(df: DataFrame, value_col: str = "value", asn_csv_path: str
 
 	parsed_fields = _parse_bgp_update_udf(F.col("bgp.payload"))
 
-	# Load ASN → Organization mapping
+	# Load ASN → (handle, description, country-code) mapping
 	spark = df.sparkSession
 	asn_df = spark.read.csv(
 		asn_csv_path,
 		header=True,
 		schema=ASN_ORG_SCHEMA,
 	)
-	asn_dict = {row.asn: row.description for row in asn_df.select("asn", "description").collect()}
-	asn_dict_broadcast = spark.broadcast(asn_dict)
+	asn_dict = {
+		row.asn: (row.handle or "", row.description or "", row.country_code or "")
+		for row in asn_df.collect()
+		if row.asn is not None
+	}
+	asn_dict_broadcast = spark.sparkContext.broadcast(asn_dict)
 
-	def _map_asn_to_org(asn_list: list[int]) -> list[str]:
+	def _map_asn_to_info(asn_list: list[int]) -> dict:
 		if not asn_list:
-			return []
+			return {"handle": [], "description": [], "country_code": []}
 		asn_map = asn_dict_broadcast.value
-		return [_organization_for_asn(asn, asn_map) for asn in asn_list]
+		handles, descriptions, country_codes = [], [], []
+		for asn in asn_list:
+			h, d, c = _asn_info(asn, asn_map)
+			handles.append(h)
+			descriptions.append(d)
+			country_codes.append(c)
+		return {"handle": handles, "description": descriptions, "country_code": country_codes}
 
-	_map_asn_udf = F.udf(_map_asn_to_org, T.ArrayType(T.StringType()))
+	_map_asn_udf = F.udf(_map_asn_to_info, _AS_INFO_SCHEMA)
 
 	return (
 		parsed.withColumn("parsed_bgp", parsed_fields)
-		.withColumn(
-			"organization",
-			_map_asn_udf(F.col("parsed_bgp.as_path")),
-		)
+		.withColumn("as_info", _map_asn_udf(F.col("parsed_bgp.as_path")))
 		.withColumn(
 			"bgp",
 			F.struct(
 				F.col("bgp.message_type").alias("message_type"),
 				F.col("parsed_bgp.as_path").alias("as_path"),
-				F.col("organization").alias("organization"),
+				F.col("as_info.handle").alias("handle"),
+				F.col("as_info.description").alias("description"),
+				F.col("as_info.country_code").alias("country-code"),
 				F.col("parsed_bgp.next_hop").alias("next_hop"),
 				F.col("parsed_bgp.nlri").alias("nlri"),
 			),
 		)
-		.drop("parsed_bgp", "organization")
+		.drop("parsed_bgp", "as_info")
 	)
 
 
@@ -337,11 +360,18 @@ def parse_single_event(raw_json: str, asn_csv_path: str = "as.csv") -> dict[str,
 
 	parsed = parse_bgp_update_payload(bgp.get("payload"))
 	asn_map = _load_asn_org_map(asn_csv_path)
-	organizations = [_organization_for_asn(asn, asn_map) for asn in parsed["as_path"]]
+	handles, descriptions, country_codes = [], [], []
+	for asn in parsed["as_path"]:
+		h, d, c = _asn_info(asn, asn_map)
+		handles.append(h)
+		descriptions.append(d)
+		country_codes.append(c)
 	event["bgp"] = {
 		"message_type": "update",
 		"as_path": parsed["as_path"],
-		"organization": organizations,
+		"handle": handles,
+		"description": descriptions,
+		"country-code": country_codes,
 		"next_hop": parsed["next_hop"],
 		"nlri": parsed["nlri"],
 	}

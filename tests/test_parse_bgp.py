@@ -75,7 +75,7 @@ class TestParseBgp(unittest.TestCase):
 
         self.assertIsNone(parse_bgp.parse_single_event(raw))
 
-    def test_parse_single_event_includes_organization_field(self) -> None:
+    def test_parse_single_event_includes_as_fields(self) -> None:
         raw = json.dumps(
             {
                 "event_type": "bgp",
@@ -90,20 +90,25 @@ class TestParseBgp(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertIn("bgp", result)
-        self.assertIn("organization", result["bgp"])
-        self.assertEqual(result["bgp"]["organization"], ['Private AS', 'Private AS'])
+        self.assertIn("handle", result["bgp"])
+        self.assertIn("description", result["bgp"])
+        self.assertIn("country-code", result["bgp"])
+        # AS 65200 and 65000 are both private ASNs
+        self.assertEqual(result["bgp"]["handle"], ["AS65200", "AS65000"])
+        self.assertEqual(result["bgp"]["description"], ["Private AS", "Private AS"])
+        self.assertEqual(result["bgp"]["country-code"], ["", ""])
 
-    def test_private_asn_is_labeled_private_as(self) -> None:
+    def test_asn_info_returns_correct_tuple(self) -> None:
         asn_map = {
-            1: "Level 3 Parent LLC",
-            131083: "Mercari Inc.",
+            1: ("LVLT-1", "Level 3 Parent LLC", "US"),
+            131083: ("SOME-HANDLE", "Mercari Inc.", "JP"),
         }
 
-        self.assertEqual(parse_bgp._organization_for_asn(65000, asn_map), "Private AS")
-        self.assertEqual(parse_bgp._organization_for_asn(4200000001, asn_map), "Private AS")
-        self.assertEqual(parse_bgp._organization_for_asn(1, asn_map), "Level 3 Parent LLC")
-        self.assertEqual(parse_bgp._organization_for_asn(999999, asn_map), "AS999999")
-        self.assertEqual(parse_bgp._organization_for_asn(131083, asn_map), "Mercari Inc.")
+        self.assertEqual(parse_bgp._asn_info(65000, asn_map), ("AS65000", "Private AS", ""))
+        self.assertEqual(parse_bgp._asn_info(4200000001, asn_map), ("AS4200000001", "Private AS", ""))
+        self.assertEqual(parse_bgp._asn_info(1, asn_map), ("LVLT-1", "Level 3 Parent LLC", "US"))
+        self.assertEqual(parse_bgp._asn_info(999999, asn_map), ("AS999999", "AS999999", ""))
+        self.assertEqual(parse_bgp._asn_info(131083, asn_map), ("SOME-HANDLE", "Mercari Inc.", "JP"))
 
 
 if __name__ == "__main__":

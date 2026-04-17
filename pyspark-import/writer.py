@@ -63,7 +63,7 @@ def write_batch_to_es(
         .option("es.nodes",                          es_url)
         .option("es.resource",                       es_index)
         .option("es.port",                           es_port)
-        .option("es.spark.dataframe.write.null",     "true")
+        .option("es.spark.dataframe.write.null",     "false")
         .mode("append")
         .save()
     )
