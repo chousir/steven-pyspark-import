@@ -433,9 +433,7 @@ def parse_bgp_updates(
 				F.col("as_info").alias("asn_info"),
 				F.col("parsed_bgp.next_hop").alias("next_hop"),
 				F.col("parsed_bgp.nlri").alias("nlri"),
-				F.col("parsed_bgp.withdrawn").alias("withdrawn"),
 				F.col("parsed_bgp.parse_error").alias("parse_error"),
-				F.col("bgp.payload").alias("payload"),
 			),
 		)
 		.withColumn("alias", _fetch_alias_udf(F.col("vlan")))
@@ -473,9 +471,7 @@ def parse_single_event(
 		"asn_info": asn_info,
 		"next_hop": parsed["next_hop"],
 		"nlri": parsed["nlri"],
-		"withdrawn": parsed["withdrawn"],
 		"parse_error": parsed["parse_error"],
-		"payload": bgp.get("payload"),
 	}
 	event["alias"] = _query_vlan_alias(event.get("vlan"), vlan_map_alias_url, default_alias)
 	return event
