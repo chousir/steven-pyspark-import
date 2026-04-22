@@ -45,9 +45,10 @@ EVE_BGP_SCHEMA = T.StructType(
 
 BGP_PARSE_SCHEMA = T.StructType(
 	[
-		T.StructField("as_path", T.ArrayType(T.IntegerType()), True),
+		T.StructField("as_path", T.ArrayType(T.LongType()), True),
 		T.StructField("next_hop", T.StringType(), True),
 		T.StructField("nlri", T.ArrayType(T.StringType()), True),
+		T.StructField("withdrawn", T.ArrayType(T.StringType()), True),
 		T.StructField("parse_error", T.StringType(), True),
 	]
 )
@@ -55,7 +56,7 @@ BGP_PARSE_SCHEMA = T.StructType(
 
 ASN_ORG_SCHEMA = T.StructType(
 	[
-		T.StructField("asn", T.IntegerType(), True),
+		T.StructField("asn", T.LongType(), True),
 		T.StructField("handle", T.StringType(), True),
 		T.StructField("description", T.StringType(), True),
 		T.StructField("country_code", T.StringType(), True),
@@ -66,7 +67,7 @@ ASN_ORG_SCHEMA = T.StructType(
 _AS_INFO_SCHEMA = T.ArrayType(
 	T.StructType(
 		[
-			T.StructField("asn", T.IntegerType(), True),
+			T.StructField("asn", T.LongType(), True),
 			T.StructField("handle", T.StringType(), True),
 			T.StructField("description", T.StringType(), True),
 			T.StructField("country_code", T.StringType(), True),
@@ -95,6 +96,9 @@ def _parse_prefix_list(data: bytes) -> list[str]:
 		prefix_len = data[offset]
 		offset += 1
 
+		if prefix_len > 32:
+			break
+
 		octets = (prefix_len + 7) // 8
 		if offset + octets > len(data):
 			break
@@ -104,6 +108,31 @@ def _parse_prefix_list(data: bytes) -> list[str]:
 
 		padded = raw + (b"\x00" * (4 - len(raw)))
 		network = f"{ipaddress.IPv4Address(padded)}/{prefix_len}"
+		prefixes.append(network)
+
+	return prefixes
+
+
+def _parse_prefix_list_v6(data: bytes) -> list[str]:
+	prefixes: list[str] = []
+	offset = 0
+
+	while offset < len(data):
+		prefix_len = data[offset]
+		offset += 1
+
+		if prefix_len > 128:
+			break
+
+		octets = (prefix_len + 7) // 8
+		if offset + octets > len(data):
+			break
+
+		raw = data[offset : offset + octets]
+		offset += octets
+
+		padded = raw + (b"\x00" * (16 - len(raw)))
+		network = f"{ipaddress.IPv6Address(padded)}/{prefix_len}"
 		prefixes.append(network)
 
 	return prefixes
@@ -212,7 +241,7 @@ def parse_bgp_update_payload(payload_hex: str | None) -> dict[str, Any]:
 	On any failure it contains a descriptive string so callers can monitor
 	parse failure rates without data loss.
 	"""
-	result: dict[str, Any] = {"as_path": [], "next_hop": None, "nlri": [], "parse_error": None}
+	result: dict[str, Any] = {"as_path": [], "next_hop": None, "nlri": [], "withdrawn": [], "parse_error": None}
 
 	if not payload_hex:
 		return result
@@ -233,6 +262,7 @@ def parse_bgp_update_payload(payload_hex: str | None) -> dict[str, Any]:
 			result["parse_error"] = "truncated: withdrawn routes overflow packet boundary"
 			return result
 
+		result["withdrawn"] = _parse_prefix_list(payload[offset : offset + withdrawn_len])
 		offset += withdrawn_len
 
 		path_attr_len, offset = _read_u16(payload, offset)
@@ -272,13 +302,34 @@ def parse_bgp_update_payload(payload_hex: str | None) -> dict[str, Any]:
 				as_path_type17 = _parse_as_path_attr(attr_value, 4)
 			elif attr_type == 3 and len(attr_value) == 4:
 				result["next_hop"] = str(ipaddress.IPv4Address(attr_value))
+			elif attr_type == 14:
+				# MP_REACH_NLRI: AFI(2) + SAFI(1) + NH_LEN(1) + NH + SNPA(1) + NLRI
+				if len(attr_value) < 4:
+					continue
+				afi = int.from_bytes(attr_value[0:2], "big")
+				nh_len = attr_value[3]
+				if 4 + nh_len > len(attr_value):
+					continue
+				nh_bytes = attr_value[4 : 4 + nh_len]
+				if afi == 2 and nh_len == 16:
+					result["next_hop"] = str(ipaddress.IPv6Address(nh_bytes))
+				elif afi == 1 and nh_len == 4:
+					result["next_hop"] = str(ipaddress.IPv4Address(nh_bytes))
+				snpa_offset = 4 + nh_len + 1  # skip SNPA count byte
+				if snpa_offset <= len(attr_value):
+					nlri_data = attr_value[snpa_offset:]
+					if afi == 2:
+						result["nlri"] = _parse_prefix_list_v6(nlri_data)
+					else:
+						result["nlri"] = _parse_prefix_list(nlri_data)
 
 		if as_path_type17 is not None:
 			result["as_path"] = as_path_type17
 		elif as_path_type2 is not None:
 			result["as_path"] = as_path_type2
 
-		result["nlri"] = _parse_prefix_list(payload[path_attr_end:])
+		if not result["nlri"]:
+			result["nlri"] = _parse_prefix_list(payload[path_attr_end:])
 		return result
 	except Exception as exc:
 		result["parse_error"] = f"{type(exc).__name__}: {exc}"
@@ -382,7 +433,9 @@ def parse_bgp_updates(
 				F.col("as_info").alias("asn_info"),
 				F.col("parsed_bgp.next_hop").alias("next_hop"),
 				F.col("parsed_bgp.nlri").alias("nlri"),
+				F.col("parsed_bgp.withdrawn").alias("withdrawn"),
 				F.col("parsed_bgp.parse_error").alias("parse_error"),
+				F.col("bgp.payload").alias("payload"),
 			),
 		)
 		.withColumn("alias", _fetch_alias_udf(F.col("vlan")))
@@ -420,7 +473,9 @@ def parse_single_event(
 		"asn_info": asn_info,
 		"next_hop": parsed["next_hop"],
 		"nlri": parsed["nlri"],
+		"withdrawn": parsed["withdrawn"],
 		"parse_error": parsed["parse_error"],
+		"payload": bgp.get("payload"),
 	}
 	event["alias"] = _query_vlan_alias(event.get("vlan"), vlan_map_alias_url, default_alias)
 	return event

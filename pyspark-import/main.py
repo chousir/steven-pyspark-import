@@ -66,6 +66,9 @@ ftp_user = get_conf("ftp.user")
 ftp_password = get_conf("ftp.password")
 ftp_remote_path = get_conf("ftp.paths")
 
+vlan_map_alias_url = get_conf("vlan_map_alias_url", required=False, default="")
+default_alias = get_conf("default_alias", required=False, default="")
+
 
 # ─────────────────────────────────────────────
 # Package configuration as dicts for passing to writers
@@ -115,7 +118,13 @@ def main():
     df_json = kafka_df.selectExpr("CAST(value AS STRING) AS value")
 
     # ── 3. Parse BGP UPDATE payload fields ─
-    df_parsed = parse_bgp_updates(df_json, value_col="value", asn_csv_path="as.csv")
+    df_parsed = parse_bgp_updates(
+        df_json,
+        value_col="value",
+        asn_csv_path="as.csv",
+        vlan_map_alias_url=vlan_map_alias_url,
+        default_alias=default_alias,
+    )
 
     # ── 4. Select sink mode ────────────────
     #
