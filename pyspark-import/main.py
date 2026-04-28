@@ -68,6 +68,7 @@ ftp_remote_path = get_conf("ftp.paths")
 
 vlan_map_alias_url = get_conf("vlan_map_alias_url", required=False, default="")
 default_alias = get_conf("default_alias", required=False, default="")
+asn_csv_path = get_conf("asn_csv_path", required=False, default="as.csv")
 
 
 # ─────────────────────────────────────────────
@@ -95,10 +96,17 @@ FTP_KWARGS = dict(
 # Main
 # ─────────────────────────────────────────────
 def main():
+    _kafka_consumer_logger = "org.apache.kafka.clients.consumer.internals.KafkaDataConsumer"
     spark = (
         SparkSession
         .builder
         .appName("EvelogImport")
+        .config(
+            "spark.driver.extraJavaOptions",
+            f"-Dlog4j.logger.{_kafka_consumer_logger}=ERROR"
+            f" -Dlog4j2.logger.kafkadataconsumer.name={_kafka_consumer_logger}"
+            f" -Dlog4j2.logger.kafkadataconsumer.level=ERROR",
+        )
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
@@ -121,7 +129,7 @@ def main():
     df_parsed = parse_bgp_updates(
         df_json,
         value_col="value",
-        asn_csv_path="as.csv",
+        asn_csv_path=asn_csv_path,
         vlan_map_alias_url=vlan_map_alias_url,
         default_alias=default_alias,
     )

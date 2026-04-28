@@ -201,18 +201,22 @@ def write_batch_to_ftp(
         import json
         import uuid as _uuid
 
-        lines = [json.dumps(row.asDict()) for row in rows]
+        lines = [json.dumps(row.asDict(recursive=True)) for row in rows]
         if not lines:
+            print("[FTP][partition] 0 rows, skipping upload")
             return
-        content     = "\n".join(lines).encode("utf-8")
-        remote_file = f"{_path}/{_uuid.uuid4()}.json"
-        with ftplib.FTP(_hostname) as ftp:
+        content   = "\n".join(lines).encode("utf-8")
+        filename  = f"{_uuid.uuid4()}.json"
+        with ftplib.FTP(_hostname, timeout=30) as ftp:
+            ftp.set_pasv(True)
             ftp.login(user=_user, passwd=_password)
-            ftp.storbinary(f"STOR {remote_file}", io.BytesIO(content))
+            ftp.cwd(_path)
+            ftp.storbinary(f"STOR {filename}", io.BytesIO(content))
+        print(f"[FTP][partition] uploaded {len(lines)} rows → {filename}")
 
     num_partitions = batch_df.rdd.getNumPartitions()
     batch_df.foreachPartition(_upload_partition)
-    print(f"[FTP] Batch {batch_id} uploaded ({num_partitions} partitions) → {_path}")
+    print(f"[FTP] Batch {batch_id} done ({num_partitions} partitions) → {_path}")
 
 
 # ─────────────────────────────────────────────
