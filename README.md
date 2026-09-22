@@ -68,3 +68,20 @@ You can switch between different sink modes in `main.py`:
 - **Elasticsearch only**: `sink_fn = partial(write_batch_to_es, **ES_KWARGS)`
 - **FTP only**: `sink_fn = partial(write_batch_to_ftp, **FTP_KWARGS)`
 - **Both (ES + FTP)**: `sink_fn = partial(write_batch_to_all, es_kwargs=ES_KWARGS, ftp_kwargs=FTP_KWARGS)`
+
+## Docker Image
+
+This branch's `Dockerfile` builds an **app image** on top of the base image
+built from the `main` branch (Spark + Kafka/Elasticsearch connector jars,
+tagged `steven-pyspark-import:20260410-base`). It only adds this pipeline's
+code and its Elasticsearch TLS truststore (`es.jks`, kept out of git via
+`.gitignore` — place your own file at the repo root before building).
+
+`application.conf` is **not** baked into the image; supply it at runtime
+(mount it into the container, or set `IMPORT_CONFIG` to point at it).
+
+```bash
+# The base image must exist locally first — build it from the main branch,
+# or `docker pull`/load it if it's published elsewhere.
+make build
+```

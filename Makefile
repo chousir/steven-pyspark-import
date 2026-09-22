@@ -1,12 +1,11 @@
-IMAGE_NAME ?= steven-pyspark-import
-IMAGE_TAG ?= $(shell date +%Y%m%d)
+IMAGE := steven-pyspark-import
+TAG := $(shell date +%Y%m%d)-cento
+BASE_IMAGE := $(IMAGE):20260410-base
+CONTAINER_COMMAND := docker build \
+	--build-arg BASE_IMAGE=$(BASE_IMAGE) \
+	-t $(IMAGE):$(TAG) .
 
-.DEFAULT_GOAL := build
-
-.PHONY: build run
+all: build
 
 build:
-	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) .
-
-run:
-	docker run --rm -it --name $(IMAGE_NAME)-run --entrypoint bash $(IMAGE_NAME):$(IMAGE_TAG)
+	$(CONTAINER_COMMAND)
