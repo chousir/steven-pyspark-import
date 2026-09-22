@@ -87,3 +87,12 @@ reference it by name. Only bump it (and update every downstream branch's
 `Makefile` to match) when the Spark version or connector versions here
 actually change — rebuilding this image with the same tag would silently
 change what every app branch builds on.
+
+If there's no shared registry to `docker push`/`pull` this image through,
+export it instead and load it on the machine that needs to build `cento`
+or `bgp`:
+
+```bash
+make save                                      # writes steven-pyspark-import-20260410-base.tar.gz
+docker load -i steven-pyspark-import-20260410-base.tar.gz   # on the other machine
+```
