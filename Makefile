@@ -1,5 +1,5 @@
 IMAGE_NAME ?= steven-pyspark-import
-IMAGE_TAG ?= $(shell date +%Y%m%d)
+IMAGE_TAG ?= 20260410-base
 
 .DEFAULT_GOAL := build
 
