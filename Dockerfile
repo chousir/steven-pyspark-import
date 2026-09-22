@@ -13,6 +13,7 @@ COPY requirements.txt ./
 RUN python3 -m pip install --no-cache-dir -r requirements.txt
 
 COPY pyspark-import ./pyspark-import
+COPY application.conf ./
 
 # Resolve Spark connectors at build time and copy them into Spark's local jar path.
 RUN set -eux; \
