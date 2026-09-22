@@ -15,7 +15,7 @@ from functools import partial
 from pyspark.sql import SparkSession
 from pyhocon import ConfigFactory
 
-from writer import write_batch_to_es, write_batch_to_ftp, write_batch_to_all
+from writer import write_batch_to_es
 
 
 # ─────────────────────────────────────────────
@@ -60,11 +60,6 @@ elasticsearch_cert_password = get_conf(
 elasticsearch_index = get_conf("elasticsearch.index")
 elasticsearch_port = str(get_conf("elasticsearch.port"))
 
-ftp_hostname = get_conf("ftp.hostname")
-ftp_user = get_conf("ftp.user")
-ftp_password = get_conf("ftp.password")
-ftp_remote_path = get_conf("ftp.paths")
-
 
 # ─────────────────────────────────────────────
 # Package configuration as dicts for passing to writers
@@ -77,13 +72,6 @@ ES_KWARGS = dict(
     es_url           = elasticsearch_url,
     es_index         = elasticsearch_index,
     es_port          = elasticsearch_port,
-)
-
-FTP_KWARGS = dict(
-    ftp_hostname    = ftp_hostname,
-    ftp_user        = ftp_user,
-    ftp_password    = ftp_password,
-    ftp_remote_path = ftp_remote_path,
 )
 
 
@@ -125,9 +113,8 @@ def main():
     #  └────────────────────────────────────────────────────────────┘
     #
     sink_fn = partial(
-        write_batch_to_all,
-        es_kwargs=ES_KWARGS,
-        ftp_kwargs=FTP_KWARGS,
+        write_batch_to_es,
+        es_kwargs=ES_KWARGS
     )
 
     # ── 4. Start streaming ─────────────────
