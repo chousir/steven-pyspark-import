@@ -68,3 +68,22 @@ You can switch between different sink modes in `main.py`:
 - **Elasticsearch only**: `sink_fn = partial(write_batch_to_es, **ES_KWARGS)`
 - **FTP only**: `sink_fn = partial(write_batch_to_ftp, **FTP_KWARGS)`
 - **Both (ES + FTP)**: `sink_fn = partial(write_batch_to_all, es_kwargs=ES_KWARGS, ftp_kwargs=FTP_KWARGS)`
+
+## Docker Image
+
+This branch's `Dockerfile` builds the shared **base image** — Spark plus
+the Kafka and Elasticsearch connector jars, resolved once at build time.
+It contains no pipeline code or config. Other branches (e.g. `cento`,
+`bgp`) build their own app image FROM this one via `--build-arg
+BASE_IMAGE=...`, so this image has to exist locally (or be pulled) before
+those branches can be built.
+
+```bash
+make build   # produces steven-pyspark-import:20260410-base
+```
+
+The tag is pinned, not date-generated, because downstream Dockerfiles
+reference it by name. Only bump it (and update every downstream branch's
+`Makefile` to match) when the Spark version or connector versions here
+actually change — rebuilding this image with the same tag would silently
+change what every app branch builds on.
